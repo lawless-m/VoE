@@ -1,0 +1,47 @@
+# AoE Server Configuration Example
+#
+# Copy this file to your desired location and edit as needed.
+
+[server]
+# Network interface to listen on
+interface = "eth0"
+
+# Log level: trace, debug, info, warn, error
+log_level = "info"
+
+# Target 1: Simple file backend
+[[target]]
+shelf = 1
+slot = 0
+backend = "file"
+config_string = "aoe-disk-1"
+
+[target.file]
+path = "/data/aoe/disk1.img"
+size = 1073741824  # 1 GiB (optional, for creation)
+
+# Target 2: Another file backend
+# [[target]]
+# shelf = 1
+# slot = 1
+# backend = "file"
+# config_string = "aoe-disk-2"
+#
+# [target.file]
+# path = "/data/aoe/disk2.img"
+# size = 2147483648  # 2 GiB
+
+# Target 3: CAS backend (not yet implemented)
+# [[target]]
+# shelf = 2
+# slot = 0
+# backend = "cas"
+# config_string = "aoe-archive"
+#
+# [target.cas]
+# block_size = 4096
+# total_sectors = 2097152  # 8 GiB with 4K sectors
+#
+# [target.cas.blob_store]
+# type = "file"
+# path = "/data/aoe/blobs"
