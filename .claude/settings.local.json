@@ -10,7 +10,8 @@
       "Bash(git push)",
       "Bash(where:*)",
       "Bash(convert --version:*)",
-      "Bash(git commit:*)"
+      "Bash(git commit:*)",
+      "Bash(cat:*)"
     ],
     "deny": [],
     "ask": []
