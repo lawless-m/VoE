@@ -49,22 +49,24 @@ pub struct AoeFlags {
 }
 
 impl AoeFlags {
-    pub fn from_byte(byte: u8) -> Self {
+    pub fn from_byte(flags_nibble: u8) -> Self {
+        // Input is already the upper nibble (shifted right by 4)
         Self {
-            response: (byte & 0x08) != 0,
-            error: (byte & 0x04) != 0,
+            response: (flags_nibble & 0x08) != 0,
+            error: (flags_nibble & 0x04) != 0,
         }
     }
 
     pub fn to_byte(&self, version: u8) -> u8 {
-        let mut flags = 0u8;
+        let mut flags_nibble = 0u8;
         if self.response {
-            flags |= 0x08;
+            flags_nibble |= 0x08; // Bit 3 of flags nibble
         }
         if self.error {
-            flags |= 0x04;
+            flags_nibble |= 0x04; // Bit 2 of flags nibble
         }
-        (flags << 4) | (version & 0x0F)
+        // Put flags in upper nibble, version in lower nibble
+        (flags_nibble << 4) | (version & 0x0F)
     }
 }
 

@@ -110,10 +110,18 @@ impl AoeListener {
 
         // Send responses
         let mut tx = self.tx.lock().unwrap();
-        for response_data in responses {
-            let response_frame = build_response(&frame, response_data);
-            if let Some(ref err) = tx.send_to(&response_frame, None) {
-                log::warn!("Error sending response: {:?}", err);
+        for (target_addr, response_data) in responses {
+            let response_frame = build_response(&frame, response_data, target_addr.shelf, target_addr.slot);
+            match tx.send_to(&response_frame, None) {
+                Some(Ok(())) => {
+                    log::debug!("Sent response successfully");
+                }
+                Some(Err(e)) => {
+                    log::warn!("Error sending response: {}", e);
+                }
+                None => {
+                    log::warn!("Failed to send response: no result");
+                }
             }
         }
 

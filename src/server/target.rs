@@ -67,7 +67,8 @@ impl TargetManager {
     }
 
     /// Handle an AoE frame, returning responses for matching targets
-    pub fn handle_frame(&mut self, frame: &AoeFrame) -> Result<Vec<ResponseData>, AoeError> {
+    /// Returns (target_address, response_data) pairs
+    pub fn handle_frame(&mut self, frame: &AoeFrame) -> Result<Vec<(TargetAddr, ResponseData)>, AoeError> {
         let mut responses = Vec::new();
 
         // Find matching targets
@@ -85,7 +86,7 @@ impl TargetManager {
 
         for addr in matching {
             let response = self.handle_target_frame(frame, addr)?;
-            responses.push(response);
+            responses.push((addr, response));
         }
 
         Ok(responses)
@@ -158,6 +159,7 @@ impl TargetManager {
         match ccmd {
             ConfigCommand::Read => {
                 // Return our config string
+                log::debug!("Config Read: responding with config_string='{}'", target.config_string);
                 Ok(ResponseData::Config(ConfigResponse {
                     buffer_count: 1,
                     firmware_version: self.firmware_version,

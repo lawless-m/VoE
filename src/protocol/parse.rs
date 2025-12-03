@@ -51,7 +51,8 @@ pub fn parse_frame(data: &[u8]) -> Result<AoeFrame, ParseError> {
     let version = ver_flags & 0x0F;
     let flags = AoeFlags::from_byte(ver_flags >> 4);
 
-    if version != AOE_VERSION {
+    // Accept both version 0 (older Linux kernel drivers) and version 1 (spec)
+    if version > 1 {
         return Err(ParseError::UnsupportedVersion(version));
     }
 

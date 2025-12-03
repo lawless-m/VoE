@@ -6,11 +6,11 @@ use super::ata::AtaResponse;
 use super::types::*;
 
 /// Build an AoE response frame
-pub fn build_response(request: &AoeFrame, response: ResponseData) -> Vec<u8> {
+pub fn build_response(request: &AoeFrame, response: ResponseData, target_shelf: u16, target_slot: u8) -> Vec<u8> {
     match response {
-        ResponseData::Ata(ata_response) => build_ata_response(request, ata_response),
-        ResponseData::Config(config) => build_config_response(request, config),
-        ResponseData::Error { code } => build_error_response(request, code),
+        ResponseData::Ata(ata_response) => build_ata_response(request, ata_response, target_shelf, target_slot),
+        ResponseData::Config(config) => build_config_response(request, config, target_shelf, target_slot),
+        ResponseData::Error { code } => build_error_response(request, code, target_shelf, target_slot),
     }
 }
 
@@ -33,7 +33,7 @@ pub struct ConfigResponse {
 }
 
 /// Build an ATA response frame
-fn build_ata_response(request: &AoeFrame, response: AtaResponse) -> Vec<u8> {
+fn build_ata_response(request: &AoeFrame, response: AtaResponse, target_shelf: u16, target_slot: u8) -> Vec<u8> {
     let data_len = response.data.as_ref().map(|d| d.len()).unwrap_or(0);
     let mut frame = Vec::with_capacity(AoeHeader::SIZE + AtaHeader::SIZE + data_len);
 
@@ -42,14 +42,14 @@ fn build_ata_response(request: &AoeFrame, response: AtaResponse) -> Vec<u8> {
     frame.extend_from_slice(&request.header.dst_mac); // src = original dst
     frame.extend_from_slice(&AOE_ETHERTYPE.to_be_bytes());
 
-    // AoE header with response flag set
+    // AoE header with response flag set (use same version as request)
     let mut flags = request.header.flags;
     flags.response = true;
     flags.error = false;
-    frame.push(flags.to_byte(AOE_VERSION));
+    frame.push(flags.to_byte(request.header.version));
     frame.push(0); // no error
-    frame.extend_from_slice(&request.header.shelf.to_be_bytes());
-    frame.push(request.header.slot);
+    frame.extend_from_slice(&target_shelf.to_be_bytes()); // Use target's actual address
+    frame.push(target_slot); // Use target's actual slot
     frame.push(AoeCommand::Ata as u8);
     frame.extend_from_slice(&request.header.tag.to_be_bytes());
 
@@ -89,7 +89,7 @@ fn build_ata_response(request: &AoeFrame, response: AtaResponse) -> Vec<u8> {
 }
 
 /// Build a config response frame
-fn build_config_response(request: &AoeFrame, response: ConfigResponse) -> Vec<u8> {
+fn build_config_response(request: &AoeFrame, response: ConfigResponse, target_shelf: u16, target_slot: u8) -> Vec<u8> {
     let config_len = response.config_string.len();
     let mut frame = Vec::with_capacity(AoeHeader::SIZE + ConfigHeader::MIN_SIZE + config_len);
 
@@ -98,14 +98,14 @@ fn build_config_response(request: &AoeFrame, response: ConfigResponse) -> Vec<u8
     frame.extend_from_slice(&request.header.dst_mac);
     frame.extend_from_slice(&AOE_ETHERTYPE.to_be_bytes());
 
-    // AoE header with response flag set
+    // AoE header with response flag set (use same version as request)
     let mut flags = request.header.flags;
     flags.response = true;
     flags.error = false;
-    frame.push(flags.to_byte(AOE_VERSION));
+    frame.push(flags.to_byte(request.header.version));
     frame.push(0); // no error
-    frame.extend_from_slice(&request.header.shelf.to_be_bytes());
-    frame.push(request.header.slot);
+    frame.extend_from_slice(&target_shelf.to_be_bytes()); // Use target's actual address
+    frame.push(target_slot); // Use target's actual slot
     frame.push(AoeCommand::Config as u8);
     frame.extend_from_slice(&request.header.tag.to_be_bytes());
 
@@ -113,7 +113,7 @@ fn build_config_response(request: &AoeFrame, response: ConfigResponse) -> Vec<u8
     frame.extend_from_slice(&response.buffer_count.to_be_bytes());
     frame.extend_from_slice(&response.firmware_version.to_be_bytes());
     frame.push(response.sector_count);
-    frame.push((AOE_VERSION << 4) | 0); // AoE version in high nibble, ccmd=0 in response
+    frame.push((1 << 4) | 0); // AoE version 1 in high nibble (always use 1 for config), ccmd=0 in response
     frame.extend_from_slice(&(config_len as u16).to_be_bytes());
     frame.extend_from_slice(&response.config_string);
 
@@ -121,7 +121,7 @@ fn build_config_response(request: &AoeFrame, response: ConfigResponse) -> Vec<u8
 }
 
 /// Build an error response frame
-fn build_error_response(request: &AoeFrame, error_code: u8) -> Vec<u8> {
+fn build_error_response(request: &AoeFrame, error_code: u8, target_shelf: u16, target_slot: u8) -> Vec<u8> {
     let mut frame = Vec::with_capacity(AoeHeader::SIZE);
 
     // Ethernet header - swap src/dst MACs
@@ -133,10 +133,10 @@ fn build_error_response(request: &AoeFrame, error_code: u8) -> Vec<u8> {
     let mut flags = request.header.flags;
     flags.response = true;
     flags.error = true;
-    frame.push(flags.to_byte(AOE_VERSION));
+    frame.push(flags.to_byte(request.header.version)); // Use request version
     frame.push(error_code);
-    frame.extend_from_slice(&request.header.shelf.to_be_bytes());
-    frame.push(request.header.slot);
+    frame.extend_from_slice(&target_shelf.to_be_bytes()); // Use target's actual address
+    frame.push(target_slot); // Use target's actual slot
     frame.push(request.header.command as u8);
     frame.extend_from_slice(&request.header.tag.to_be_bytes());
 
