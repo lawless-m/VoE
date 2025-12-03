@@ -116,4 +116,5 @@ pub trait ArchivalStorage: BlockStorage {
 }
 
 // Re-export backends
+pub use cas::CasBackend;
 pub use file::FileBackend;

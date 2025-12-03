@@ -6,12 +6,14 @@
 //! Example:
 //!   aoe-server /etc/aoe-server.toml
 
-use aoe_server::config::{BackendType, Config};
+use aoe_server::blob::FileBlobStore;
+use aoe_server::config::{BackendType, BlobStoreConfig, Config};
 use aoe_server::server::{AoeListener, TargetManager};
-use aoe_server::storage::FileBackend;
+use aoe_server::storage::{CasBackend, FileBackend};
 use aoe_server::BlockStorage;
 use anyhow::{Context, Result};
 use std::env;
+use std::path::Path;
 
 fn main() -> Result<()> {
     // Parse command line arguments
@@ -79,12 +81,53 @@ fn main() -> Result<()> {
                 Box::new(backend)
             }
             BackendType::Cas => {
-                // TODO: Implement CAS backend
-                anyhow::bail!(
-                    "CAS backend not yet implemented for shelf {} slot {}",
-                    target_config.shelf,
-                    target_config.slot
+                let cas_config = target_config
+                    .cas
+                    .as_ref()
+                    .expect("cas config validated");
+
+                // Create blob store
+                let blob_store: Box<dyn aoe_server::blob::BlobStore> =
+                    match &cas_config.blob_store {
+                        BlobStoreConfig::File { path } => {
+                            std::fs::create_dir_all(path).with_context(|| {
+                                format!("failed to create blob store directory: {}", path)
+                            })?;
+                            Box::new(FileBlobStore::new(path).with_context(|| {
+                                format!("failed to create file blob store at {}", path)
+                            })?)
+                        }
+                    };
+
+                // Determine snapshot file path (alongside blob store)
+                let snapshot_path = match &cas_config.blob_store {
+                    BlobStoreConfig::File { path } => {
+                        Path::new(path).parent().unwrap_or(Path::new(".")).join("snapshots.json")
+                    }
+                };
+
+                let backend = CasBackend::new(
+                    blob_store,
+                    cas_config.total_sectors,
+                    &snapshot_path,
+                )
+                .with_context(|| {
+                    format!(
+                        "failed to create CAS backend for shelf {} slot {}",
+                        target_config.shelf, target_config.slot
+                    )
+                })?;
+
+                log::info!(
+                    "  CAS backend: {} ({} sectors, snapshots at {})",
+                    match &cas_config.blob_store {
+                        BlobStoreConfig::File { path } => path.as_str(),
+                    },
+                    cas_config.total_sectors,
+                    snapshot_path.display()
                 );
+
+                Box::new(backend)
             }
         };
 
