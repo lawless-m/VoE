@@ -3,6 +3,7 @@
 //! This module defines the BlockStorage trait and various implementations.
 
 pub mod cas;
+pub mod cas_client;
 pub mod file;
 
 use thiserror::Error;

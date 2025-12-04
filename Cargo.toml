@@ -15,6 +15,7 @@ pnet_datalink = "0.35"
 
 # Hashing for CAS backend
 blake3 = "1.5"
+sha2 = "0.10"
 hex = "0.4"
 
 # Error handling
@@ -36,9 +37,29 @@ memmap2 = "0.9"
 # Compression for CAS backend
 lz4_flex = "0.11"
 
+# CLI argument parsing
+clap = { version = "4", features = ["derive"] }
+
+# Binary serialization for iSCSI/NBD
+byteorder = "1"
+
+# Random number generation
+rand = "0.8"
+
+# libc for NBD error codes
+libc = "0.2"
+
 [dev-dependencies]
 tempfile = "3"
 
 [[bin]]
 name = "aoe-server"
 path = "src/main.rs"
+
+[[bin]]
+name = "cas-server"
+path = "src/bin/cas-server.rs"
+
+[[bin]]
+name = "nbd-server"
+path = "src/bin/nbd-server.rs"
