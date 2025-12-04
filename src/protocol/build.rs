@@ -113,7 +113,7 @@ fn build_config_response(request: &AoeFrame, response: ConfigResponse, target_sh
     frame.extend_from_slice(&response.buffer_count.to_be_bytes());
     frame.extend_from_slice(&response.firmware_version.to_be_bytes());
     frame.push(response.sector_count);
-    frame.push((1 << 4) | 0); // AoE version 1 in high nibble (always use 1 for config), ccmd=0 in response
+    frame.push((1 << 4) | 0); // AoE version 1 in high nibble, ccmd=0 in low nibble (response)
     frame.extend_from_slice(&(config_len as u16).to_be_bytes());
     frame.extend_from_slice(&response.config_string);
 

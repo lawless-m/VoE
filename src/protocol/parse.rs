@@ -48,8 +48,8 @@ pub fn parse_frame(data: &[u8]) -> Result<AoeFrame, ParseError> {
 
     // Parse AoE common header
     let ver_flags = data[14];
-    let version = ver_flags & 0x0F;
-    let flags = AoeFlags::from_byte(ver_flags >> 4);
+    let version = ver_flags >> 4;  // Version is in upper nibble
+    let flags = AoeFlags::from_byte(ver_flags & 0x0F);  // Flags are in lower nibble
 
     // Accept both version 0 (older Linux kernel drivers) and version 1 (spec)
     if version > 1 {

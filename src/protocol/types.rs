@@ -65,8 +65,8 @@ impl AoeFlags {
         if self.error {
             flags_nibble |= 0x04; // Bit 2 of flags nibble
         }
-        // Put flags in upper nibble, version in lower nibble
-        (flags_nibble << 4) | (version & 0x0F)
+        // Put version in upper nibble, flags in lower nibble (per AoE spec)
+        (version << 4) | (flags_nibble & 0x0F)
     }
 }
 
