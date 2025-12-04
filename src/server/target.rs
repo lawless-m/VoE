@@ -42,7 +42,7 @@ impl TargetManager {
     pub fn new() -> Self {
         Self {
             targets: HashMap::new(),
-            firmware_version: 1,
+            firmware_version: 0x4019, // Match vblade's firmware version
         }
     }
 
@@ -161,7 +161,7 @@ impl TargetManager {
                 // Return our config string
                 log::debug!("Config Read: responding with config_string='{}'", target.config_string);
                 Ok(ResponseData::Config(ConfigResponse {
-                    buffer_count: 1,
+                    buffer_count: 16, // Match vblade - number of outstanding requests we can handle
                     firmware_version: self.firmware_version,
                     sector_count: MAX_SECTORS_STANDARD,
                     config_string: target.config_string.as_bytes().to_vec(),
@@ -171,7 +171,7 @@ impl TargetManager {
                 // Test if config string matches exactly
                 if config_header.config_string == target.config_string.as_bytes() {
                     Ok(ResponseData::Config(ConfigResponse {
-                        buffer_count: 1,
+                        buffer_count: 16, // Match vblade - number of outstanding requests we can handle
                         firmware_version: self.firmware_version,
                         sector_count: MAX_SECTORS_STANDARD,
                         config_string: target.config_string.as_bytes().to_vec(),
@@ -189,7 +189,7 @@ impl TargetManager {
                     .starts_with(&config_header.config_string)
                 {
                     Ok(ResponseData::Config(ConfigResponse {
-                        buffer_count: 1,
+                        buffer_count: 16, // Match vblade - number of outstanding requests we can handle
                         firmware_version: self.firmware_version,
                         sector_count: MAX_SECTORS_STANDARD,
                         config_string: target.config_string.as_bytes().to_vec(),
