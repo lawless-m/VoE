@@ -93,6 +93,8 @@ struct CasScsiDeviceState {
     reader: BufReader<TcpStream>,
     writer: BufWriter<TcpStream>,
     index: LbaIndex,
+    /// Write cache: LBA -> (data, dirty flag)
+    write_cache: HashMap<u64, Vec<u8>>,
 }
 
 /// CAS-backed SCSI block device
@@ -127,6 +129,7 @@ impl CasScsiDevice {
             reader,
             writer,
             index,
+            write_cache: HashMap::new(),
         };
 
         Ok(Self {
@@ -215,6 +218,12 @@ impl ScsiBlockDevice for CasScsiDevice {
         for i in 0..blocks {
             let block_lba = lba + i as u64;
 
+            // Check write cache first
+            if let Some(cached_data) = state.write_cache.get(&block_lba) {
+                buffer.extend_from_slice(cached_data);
+                continue;
+            }
+
             // Get hash for this LBA, or use zero block
             let hash = state
                 .index
@@ -247,9 +256,9 @@ impl ScsiBlockDevice for CasScsiDevice {
         }
 
         let blocks = (data.len() + BLOCK_SIZE as usize - 1) / BLOCK_SIZE as usize;
-
         let mut state = self.state.lock().unwrap();
 
+        // Store all blocks in write cache - return immediately without CAS I/O!
         for i in 0..blocks {
             let block_lba = lba + i as u64;
             let offset = i * BLOCK_SIZE as usize;
@@ -259,15 +268,11 @@ impl ScsiBlockDevice for CasScsiDevice {
             let mut block_data = vec![0u8; BLOCK_SIZE as usize];
             block_data[..end - offset].copy_from_slice(&data[offset..end]);
 
-            // Write to CAS and get hash
-            let hash = Self::write_to_cas(&mut state, &block_data)
-                .map_err(|e| IscsiError::Io(e))?;
-
-            // Update LBA mapping
-            state.index.mappings.insert(block_lba, hash);
+            // Store in write cache
+            state.write_cache.insert(block_lba, block_data);
         }
 
-        // Index will be saved on flush() - no need to save after every write
+        // Return immediately - actual CAS writes happen on flush()
         Ok(())
     }
 
@@ -280,6 +285,23 @@ impl ScsiBlockDevice for CasScsiDevice {
     }
 
     fn flush(&mut self) -> ScsiResult<()> {
+        let mut state = self.state.lock().unwrap();
+
+        // Collect cached blocks to avoid borrowing issues
+        let cached_blocks: Vec<(u64, Vec<u8>)> = state.write_cache.drain().collect();
+
+        // Write all cached blocks to CAS
+        for (lba, block_data) in cached_blocks {
+            // Write to CAS and get hash
+            let hash = Self::write_to_cas(&mut state, &block_data)
+                .map_err(|e| IscsiError::Io(e))?;
+
+            // Update LBA mapping
+            state.index.mappings.insert(lba, hash);
+        }
+
+        // Save index
+        drop(state);
         self.save_index()
             .map_err(|e| IscsiError::Io(e))
     }
