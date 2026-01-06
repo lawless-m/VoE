@@ -49,6 +49,9 @@ rand = "0.8"
 # libc for NBD error codes
 libc = "0.2"
 
+# iSCSI target library (local development version)
+iscsi-target = { path = "../iscsi-crate" }
+
 [dev-dependencies]
 tempfile = "3"
 
@@ -63,3 +66,7 @@ path = "src/bin/cas-server.rs"
 [[bin]]
 name = "nbd-server"
 path = "src/bin/nbd-server.rs"
+
+[[bin]]
+name = "iscsi-server"
+path = "src/bin/iscsi-server.rs"
