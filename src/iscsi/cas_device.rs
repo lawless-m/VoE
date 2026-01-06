@@ -15,6 +15,7 @@ use crate::cas::Hash;
 use iscsi_target::{IscsiError, ScsiBlockDevice, ScsiResult};
 
 const BLOCK_SIZE: u32 = 4096;  // 4KB blocks - good balance for CAS dedup
+const MAX_CACHED_BLOCKS: usize = 512;  // Auto-flush when cache exceeds 2MB (512 * 4KB)
 
 /// Configuration for CAS SCSI device
 #[derive(Debug, Clone)]
@@ -272,7 +273,19 @@ impl ScsiBlockDevice for CasScsiDevice {
             state.write_cache.insert(block_lba, block_data);
         }
 
-        // Return immediately - actual CAS writes happen on flush()
+        // Auto-flush if cache gets too large to prevent iSCSI timeout
+        if state.write_cache.len() >= MAX_CACHED_BLOCKS {
+            log::info!("Auto-flushing cache ({} blocks >= {} limit)", state.write_cache.len(), MAX_CACHED_BLOCKS);
+            let cached_blocks: Vec<(u64, Vec<u8>)> = state.write_cache.drain().collect();
+
+            for (lba, block_data) in cached_blocks {
+                let hash = Self::write_to_cas(&mut state, &block_data)
+                    .map_err(|e| IscsiError::Io(e))?;
+                state.index.mappings.insert(lba, hash);
+            }
+        }
+
+        // Return immediately - actual CAS writes happen on flush() or auto-flush
         Ok(())
     }
 
@@ -289,9 +302,16 @@ impl ScsiBlockDevice for CasScsiDevice {
 
         // Collect cached blocks to avoid borrowing issues
         let cached_blocks: Vec<(u64, Vec<u8>)> = state.write_cache.drain().collect();
+        let total_blocks = cached_blocks.len();
+
+        log::info!("Flushing {} cached blocks to CAS", total_blocks);
 
         // Write all cached blocks to CAS
-        for (lba, block_data) in cached_blocks {
+        for (i, (lba, block_data)) in cached_blocks.into_iter().enumerate() {
+            if i % 100 == 0 && i > 0 {
+                log::info!("Flushed {}/{} blocks", i, total_blocks);
+            }
+
             // Write to CAS and get hash
             let hash = Self::write_to_cas(&mut state, &block_data)
                 .map_err(|e| IscsiError::Io(e))?;
@@ -299,6 +319,8 @@ impl ScsiBlockDevice for CasScsiDevice {
             // Update LBA mapping
             state.index.mappings.insert(lba, hash);
         }
+
+        log::info!("All {} blocks flushed to CAS, saving index", total_blocks);
 
         // Save index
         drop(state);
