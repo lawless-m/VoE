@@ -26,8 +26,8 @@ struct Args {
     #[arg(short, long, default_value = "100")]
     size: u64,
 
-    /// LBA index file path
-    #[arg(short, long, default_value = "/var/lib/voe-iscsi/index.json")]
+    /// LBA index database path
+    #[arg(short, long, default_value = "/var/lib/voe-iscsi/index")]
     index: PathBuf,
 
     /// iSCSI target name (IQN)

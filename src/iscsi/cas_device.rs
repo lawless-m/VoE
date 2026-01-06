@@ -3,19 +3,18 @@
 //! Implements ScsiBlockDevice trait with CAS backend for direct iSCSI → CAS integration.
 
 use std::collections::HashMap;
-use std::fs::{File, OpenOptions};
 use std::io::{BufReader, BufWriter};
 use std::net::TcpStream;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
-use serde::{Deserialize, Serialize};
+use rocksdb::{DB, Options as RocksOptions};
 
 use crate::cas::protocol::{read_frame, write_frame, CasCommand};
 use crate::cas::Hash;
 use iscsi_target::{IscsiError, ScsiBlockDevice, ScsiResult};
 
 const BLOCK_SIZE: u32 = 4096;  // 4KB blocks - good balance for CAS dedup
-const MAX_CACHED_BLOCKS: usize = 128;  // Auto-flush when cache exceeds 512KB to prevent iSCSI timeout
+const MAX_CACHED_BLOCKS: usize = 1000;  // Auto-flush when cache exceeds 4MB to prevent memory bloat
 
 /// Configuration for CAS SCSI device
 #[derive(Debug, Clone)]
@@ -47,45 +46,79 @@ impl Default for CasScsiDeviceConfig {
     }
 }
 
-/// Persistent index of LBA to hash mappings
-#[derive(Debug, Serialize, Deserialize)]
+/// Persistent index of LBA to hash mappings using RocksDB
 struct LbaIndex {
-    /// LBA to hash mappings (only non-zero blocks)
-    mappings: HashMap<u64, Hash>,
-    /// Hash of the zero block
+    db: Arc<DB>,
     zero_block_hash: Hash,
 }
 
+// Special key for storing zero block hash
+const ZERO_BLOCK_KEY: &[u8] = b"__ZERO_BLOCK__";
+
 impl LbaIndex {
-    fn new(zero_block_hash: Hash) -> Self {
-        Self {
-            mappings: HashMap::new(),
-            zero_block_hash,
-        }
-    }
-
-    fn load(path: &Path) -> std::io::Result<Self> {
-        let file = File::open(path)?;
-        serde_json::from_reader(file).map_err(|e| {
-            std::io::Error::new(std::io::ErrorKind::InvalidData, e)
-        })
-    }
-
-    fn save(&self, path: &Path) -> std::io::Result<()> {
+    fn new(db_path: &PathBuf, zero_block_hash: Hash) -> std::io::Result<Self> {
         // Create parent directory if needed
-        if let Some(parent) = path.parent() {
+        if let Some(parent) = db_path.parent() {
             std::fs::create_dir_all(parent)?;
         }
 
-        let file = OpenOptions::new()
-            .write(true)
-            .create(true)
-            .truncate(true)
-            .open(path)?;
+        let mut opts = RocksOptions::default();
+        opts.create_if_missing(true);
+        opts.set_compression_type(rocksdb::DBCompressionType::Lz4);
 
-        serde_json::to_writer_pretty(file, self).map_err(|e| {
-            std::io::Error::new(std::io::ErrorKind::Other, e)
-        })
+        let db = DB::open(&opts, db_path)
+            .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?;
+
+        let db = Arc::new(db);
+
+        // Store zero block hash
+        db.put(ZERO_BLOCK_KEY, &zero_block_hash)
+            .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?;
+
+        Ok(Self { db, zero_block_hash })
+    }
+
+    fn open(db_path: &PathBuf) -> std::io::Result<Self> {
+        let mut opts = RocksOptions::default();
+        opts.set_compression_type(rocksdb::DBCompressionType::Lz4);
+
+        let db = DB::open(&opts, db_path)
+            .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?;
+
+        let db = Arc::new(db);
+
+        // Load zero block hash
+        let zero_block_hash = db.get(ZERO_BLOCK_KEY)
+            .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?
+            .ok_or_else(|| std::io::Error::new(std::io::ErrorKind::InvalidData, "Missing zero block hash"))?;
+
+        let mut hash = [0u8; 32];
+        hash.copy_from_slice(&zero_block_hash);
+
+        Ok(Self { db, zero_block_hash: hash })
+    }
+
+    fn get(&self, lba: u64) -> std::io::Result<Option<Hash>> {
+        let key = lba.to_le_bytes();
+        match self.db.get(&key) {
+            Ok(Some(value)) => {
+                if value.len() == 32 {
+                    let mut hash = [0u8; 32];
+                    hash.copy_from_slice(&value);
+                    Ok(Some(hash))
+                } else {
+                    Err(std::io::Error::new(std::io::ErrorKind::InvalidData, "Invalid hash size"))
+                }
+            }
+            Ok(None) => Ok(None),
+            Err(e) => Err(std::io::Error::new(std::io::ErrorKind::Other, e)),
+        }
+    }
+
+    fn insert(&self, lba: u64, hash: &Hash) -> std::io::Result<()> {
+        let key = lba.to_le_bytes();
+        self.db.put(&key, hash)
+            .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))
     }
 }
 
@@ -113,17 +146,17 @@ impl CasScsiDevice {
         let mut reader = BufReader::new(stream.try_clone()?);
         let mut writer = BufWriter::new(stream);
 
-        // Try to load existing index, or create new
+        // Try to open existing index, or create new
         let index = if config.index_path.exists() {
-            log::info!("Loading existing index from {:?}", config.index_path);
-            LbaIndex::load(&config.index_path)?
+            log::info!("Opening existing RocksDB index at {:?}", config.index_path);
+            LbaIndex::open(&config.index_path)?
         } else {
-            log::info!("Creating new index, initializing zero block");
+            log::info!("Creating new RocksDB index, initializing zero block");
             // Initialize zero block
             let zero_block = vec![0u8; BLOCK_SIZE as usize];
             let zero_hash = Self::write_to_cas_static(&mut writer, &mut reader, &zero_block)?;
             log::info!("Zero block hash: {}", hex::encode(&zero_hash));
-            LbaIndex::new(zero_hash)
+            LbaIndex::new(&config.index_path, zero_hash)?
         };
 
         let state = CasScsiDeviceState {
@@ -198,11 +231,6 @@ impl CasScsiDevice {
         }
     }
 
-    /// Save the index to disk
-    fn save_index(&self) -> std::io::Result<()> {
-        let state = self.state.lock().unwrap();
-        state.index.save(&self.config.index_path)
-    }
 }
 
 impl ScsiBlockDevice for CasScsiDevice {
@@ -226,12 +254,11 @@ impl ScsiBlockDevice for CasScsiDevice {
             }
 
             // Get hash for this LBA, or use zero block
-            let hash = state
-                .index
-                .mappings
-                .get(&block_lba)
-                .copied()
-                .unwrap_or(state.index.zero_block_hash);
+            let hash = match state.index.get(block_lba) {
+                Ok(Some(h)) => h,
+                Ok(None) => state.index.zero_block_hash,
+                Err(e) => return Err(IscsiError::Io(e)),
+            };
 
             // Read from CAS
             let data = Self::read_from_cas(&mut state, &hash)
@@ -273,11 +300,15 @@ impl ScsiBlockDevice for CasScsiDevice {
             state.write_cache.insert(block_lba, block_data);
         }
 
-        // No auto-flush - let cache grow as needed
-        // flush() returns immediately anyway, so data will persist on unmount/power-off
-        // For production, implement async background flush thread
-        log::debug!("Write cache now has {} blocks", state.write_cache.len());
+        // Auto-flush if cache exceeds threshold
+        let cache_size = state.write_cache.len();
+        if cache_size >= MAX_CACHED_BLOCKS {
+            log::info!("Cache has {} blocks, triggering auto-flush", cache_size);
+            drop(state); // Release lock before calling flush()
+            return self.flush();
+        }
 
+        log::debug!("Write cache now has {} blocks", cache_size);
         Ok(())
     }
 
@@ -290,19 +321,28 @@ impl ScsiBlockDevice for CasScsiDevice {
     }
 
     fn flush(&mut self) -> ScsiResult<()> {
-        // Do what real filesystems do: LIE!
-        // Return success immediately, actual flush happens via auto-flush during writes
-
-        let state = self.state.lock().unwrap();
+        let mut state = self.state.lock().unwrap();
         let cached_count = state.write_cache.len();
-        drop(state);
 
-        if cached_count > 0 {
-            log::info!("flush() called with {} cached blocks - returning success (will flush on auto-flush)", cached_count);
+        if cached_count == 0 {
+            return Ok(());
         }
 
-        // Return success immediately - data is "safe" in cache
-        // Auto-flush mechanism will write to CAS when cache fills
+        log::info!("flush() called with {} cached blocks - actually flushing to CAS", cached_count);
+
+        // Flush all cached blocks to CAS
+        let cache = std::mem::take(&mut state.write_cache);
+        for (lba, block_data) in cache.iter() {
+            // Write block to CAS and get hash
+            let hash = Self::write_to_cas(&mut state, block_data)
+                .map_err(|e| IscsiError::Io(e))?;
+
+            // Update index with hash for this LBA (RocksDB writes immediately)
+            state.index.insert(*lba, &hash)
+                .map_err(|e| IscsiError::Io(e))?;
+        }
+
+        log::info!("Flushed {} blocks to CAS and index", cached_count);
         Ok(())
     }
 
@@ -316,5 +356,36 @@ impl ScsiBlockDevice for CasScsiDevice {
 
     fn product_rev(&self) -> &str {
         &self.config.product_rev
+    }
+}
+
+impl Drop for CasScsiDevice {
+    fn drop(&mut self) {
+        // Flush cache to CAS when device is dropped
+        let mut state = self.state.lock().unwrap();
+        let cached_count = state.write_cache.len();
+
+        if cached_count == 0 {
+            return;
+        }
+
+        log::warn!("Device being dropped with {} cached blocks - flushing to CAS", cached_count);
+
+        // Flush all cached blocks to CAS
+        let cache = std::mem::take(&mut state.write_cache);
+        for (lba, block_data) in cache.iter() {
+            match CasScsiDevice::write_to_cas(&mut state, block_data) {
+                Ok(hash) => {
+                    if let Err(e) = state.index.insert(*lba, &hash) {
+                        log::error!("Failed to update index for block {}: {}", lba, e);
+                    }
+                }
+                Err(e) => {
+                    log::error!("Failed to flush block {} to CAS: {}", lba, e);
+                }
+            }
+        }
+
+        log::info!("Successfully flushed {} blocks to CAS and index on drop", cached_count);
     }
 }
