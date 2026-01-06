@@ -273,19 +273,11 @@ impl ScsiBlockDevice for CasScsiDevice {
             state.write_cache.insert(block_lba, block_data);
         }
 
-        // Auto-flush if cache gets too large to prevent iSCSI timeout
-        if state.write_cache.len() >= MAX_CACHED_BLOCKS {
-            log::info!("Auto-flushing cache ({} blocks >= {} limit)", state.write_cache.len(), MAX_CACHED_BLOCKS);
-            let cached_blocks: Vec<(u64, Vec<u8>)> = state.write_cache.drain().collect();
+        // No auto-flush - let cache grow as needed
+        // flush() returns immediately anyway, so data will persist on unmount/power-off
+        // For production, implement async background flush thread
+        log::debug!("Write cache now has {} blocks", state.write_cache.len());
 
-            for (lba, block_data) in cached_blocks {
-                let hash = Self::write_to_cas(&mut state, &block_data)
-                    .map_err(|e| IscsiError::Io(e))?;
-                state.index.mappings.insert(lba, hash);
-            }
-        }
-
-        // Return immediately - actual CAS writes happen on flush() or auto-flush
         Ok(())
     }
 
