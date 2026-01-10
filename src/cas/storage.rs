@@ -1,9 +1,9 @@
 //! CAS storage engine
 //!
-//! Handles content-addressable storage with SHA-256 hashing.
+//! Handles content-addressable storage with xxHash3-128 hashing.
 
 use super::Hash;
-use sha2::{Digest, Sha256};
+use xxhash_rust::xxh3::xxh3_128;
 use std::fs::{self, File};
 use std::io::{self, Read, Write};
 use std::path::{Path, PathBuf};
@@ -23,10 +23,9 @@ impl CasStorage {
 
     /// Write data and return its hash
     pub fn write(&self, data: &[u8]) -> io::Result<Hash> {
-        // Calculate hash
-        let mut hasher = Sha256::new();
-        hasher.update(data);
-        let hash: Hash = hasher.finalize().into();
+        // Calculate hash using xxHash3-128
+        let hash_u128 = xxh3_128(data);
+        let hash: Hash = hash_u128.to_le_bytes();
 
         // Write to file (organized in subdirectories by first 2 hex chars)
         let path = self.hash_to_path(&hash);
@@ -95,7 +94,7 @@ mod tests {
         assert!(storage.exists(&hash));
 
         // Non-existent hash
-        let fake_hash = [0u8; 32];
+        let fake_hash = [0u8; 16];
         assert!(!storage.exists(&fake_hash));
     }
 

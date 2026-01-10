@@ -92,7 +92,7 @@ impl LbaIndex {
             .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?
             .ok_or_else(|| std::io::Error::new(std::io::ErrorKind::InvalidData, "Missing zero block hash"))?;
 
-        let mut hash = [0u8; 32];
+        let mut hash = [0u8; 16];
         hash.copy_from_slice(&zero_block_hash);
 
         Ok(Self { db, zero_block_hash: hash })
@@ -102,8 +102,8 @@ impl LbaIndex {
         let key = lba.to_le_bytes();
         match self.db.get(&key) {
             Ok(Some(value)) => {
-                if value.len() == 32 {
-                    let mut hash = [0u8; 32];
+                if value.len() == 16 {
+                    let mut hash = [0u8; 16];
                     hash.copy_from_slice(&value);
                     Ok(Some(hash))
                 } else {
@@ -183,8 +183,8 @@ impl CasScsiDevice {
         let (cmd, hash_data) = read_frame(reader)?;
 
         if let CasCommand::Write = cmd {
-            if hash_data.len() == 32 {
-                let mut hash = [0u8; 32];
+            if hash_data.len() == 16 {
+                let mut hash = [0u8; 16];
                 hash.copy_from_slice(&hash_data);
                 return Ok(hash);
             }
@@ -203,8 +203,8 @@ impl CasScsiDevice {
         let (cmd, hash_data) = read_frame(&mut state.reader)?;
 
         if let CasCommand::Write = cmd {
-            if hash_data.len() == 32 {
-                let mut hash = [0u8; 32];
+            if hash_data.len() == 16 {
+                let mut hash = [0u8; 16];
                 hash.copy_from_slice(&hash_data);
                 return Ok(hash);
             }

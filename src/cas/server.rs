@@ -94,10 +94,10 @@ fn handle_client(mut stream: TcpStream, storage: Arc<Mutex<CasStorage>>) -> io::
                 }
             }
             CasCommand::Read => {
-                if data.len() != 32 {
+                if data.len() != 16 {
                     CasResponse::Error("invalid hash length".to_string())
                 } else {
-                    let mut hash = [0u8; 32];
+                    let mut hash = [0u8; 16];
                     hash.copy_from_slice(&data);
                     let storage = storage.lock().unwrap();
                     match storage.read(&hash) {
@@ -107,10 +107,10 @@ fn handle_client(mut stream: TcpStream, storage: Arc<Mutex<CasStorage>>) -> io::
                 }
             }
             CasCommand::Exists => {
-                if data.len() != 32 {
+                if data.len() != 16 {
                     CasResponse::Error("invalid hash length".to_string())
                 } else {
-                    let mut hash = [0u8; 32];
+                    let mut hash = [0u8; 16];
                     hash.copy_from_slice(&data);
                     let storage = storage.lock().unwrap();
                     CasResponse::Exists(storage.exists(&hash))

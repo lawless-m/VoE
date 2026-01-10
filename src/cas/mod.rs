@@ -10,5 +10,5 @@ pub use protocol::{CasCommand, CasResponse};
 pub use storage::CasStorage;
 pub use server::{CasServer, CasServerConfig};
 
-/// Hash type used for content addressing (SHA-256)
-pub type Hash = [u8; 32];
+/// Hash type used for content addressing (xxHash3-128)
+pub type Hash = [u8; 16];
