@@ -7,7 +7,7 @@ use std::io::{BufReader, BufWriter};
 use std::net::TcpStream;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
-use rocksdb::{DB, Options as RocksOptions};
+use sled::Db;
 
 use crate::cas::protocol::{read_frame, write_frame, CasCommand};
 use crate::cas::Hash;
@@ -46,9 +46,9 @@ impl Default for CasScsiDeviceConfig {
     }
 }
 
-/// Persistent index of LBA to hash mappings using RocksDB
+/// Persistent index of LBA to hash mappings using sled
 struct LbaIndex {
-    db: Arc<DB>,
+    db: Arc<Db>,
     zero_block_hash: Hash,
 }
 
@@ -62,27 +62,20 @@ impl LbaIndex {
             std::fs::create_dir_all(parent)?;
         }
 
-        let mut opts = RocksOptions::default();
-        opts.create_if_missing(true);
-        opts.set_compression_type(rocksdb::DBCompressionType::Lz4);
-
-        let db = DB::open(&opts, db_path)
+        let db = sled::open(db_path)
             .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?;
 
         let db = Arc::new(db);
 
         // Store zero block hash
-        db.put(ZERO_BLOCK_KEY, &zero_block_hash)
+        db.insert(ZERO_BLOCK_KEY, &zero_block_hash)
             .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?;
 
         Ok(Self { db, zero_block_hash })
     }
 
     fn open(db_path: &PathBuf) -> std::io::Result<Self> {
-        let mut opts = RocksOptions::default();
-        opts.set_compression_type(rocksdb::DBCompressionType::Lz4);
-
-        let db = DB::open(&opts, db_path)
+        let db = sled::open(db_path)
             .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?;
 
         let db = Arc::new(db);
@@ -117,8 +110,9 @@ impl LbaIndex {
 
     fn insert(&self, lba: u64, hash: &Hash) -> std::io::Result<()> {
         let key = lba.to_le_bytes();
-        self.db.put(&key, hash)
-            .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))
+        self.db.insert(&key, hash)
+            .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?;
+        Ok(())
     }
 }
 
