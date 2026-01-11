@@ -18,6 +18,8 @@ pub enum CasCommand {
     Exists = 0x03,
     /// Ping/keepalive
     Ping = 0x04,
+    /// Delete data by hash
+    Delete = 0x05,
 }
 
 impl TryFrom<u8> for CasCommand {
@@ -29,6 +31,7 @@ impl TryFrom<u8> for CasCommand {
             0x02 => Ok(CasCommand::Read),
             0x03 => Ok(CasCommand::Exists),
             0x04 => Ok(CasCommand::Ping),
+            0x05 => Ok(CasCommand::Delete),
             _ => Err(io::Error::new(
                 io::ErrorKind::InvalidData,
                 format!("unknown command: {}", value),
@@ -48,6 +51,8 @@ pub enum CasResponse {
     Exists(bool),
     /// Pong response
     Pong,
+    /// Deletion confirmation
+    Deleted(bool),
     /// Error response
     Error(String),
 }
@@ -98,7 +103,7 @@ pub fn write_frame<W: Write>(
 pub fn write_response<W: Write>(writer: &mut W, response: &CasResponse) -> io::Result<()> {
     match response {
         CasResponse::Hash(hash) => {
-            // Command 0x01 (write response), length 32, hash bytes
+            // Command 0x01 (write response), length 16, hash bytes
             write_frame(writer, CasCommand::Write, hash)?;
         }
         CasResponse::Data(data) => {
@@ -112,6 +117,10 @@ pub fn write_response<W: Write>(writer: &mut W, response: &CasResponse) -> io::R
         CasResponse::Pong => {
             // Command 0x04 (pong), length 0
             write_frame(writer, CasCommand::Ping, &[])?;
+        }
+        CasResponse::Deleted(deleted) => {
+            // Command 0x05 (delete response), length 1, boolean byte
+            write_frame(writer, CasCommand::Delete, &[*deleted as u8])?;
         }
         CasResponse::Error(msg) => {
             // Command 0xFF (error), length, error message bytes

@@ -1,0 +1,26 @@
+# Example multi-target iSCSI server configuration
+# Usage: iscsi-server --config iscsi-multi-target.toml
+
+[server]
+bind = "0.0.0.0:3260"
+cas_server = "127.0.0.1:3000"
+
+# Static base image - mount this to install/update the OS
+[[targets]]
+name = "iqn.2025-12.local.voe:storage.debian-static"
+size_mb = 10240
+index_path = "/var/lib/voe-iscsi/targets/debian-static/index"
+alias = "Debian Static Base"
+
+# Live clones - can be deleted and recreated from static base
+[[targets]]
+name = "iqn.2025-12.local.voe:storage.debian-live1"
+size_mb = 10240
+index_path = "/var/lib/voe-iscsi/targets/debian-live1/index"
+alias = "Debian Live 1"
+
+[[targets]]
+name = "iqn.2025-12.local.voe:storage.debian-live2"
+size_mb = 10240
+index_path = "/var/lib/voe-iscsi/targets/debian-live2/index"
+alias = "Debian Live 2"

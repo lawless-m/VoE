@@ -57,6 +57,19 @@ impl CasStorage {
         self.hash_to_path(hash).exists()
     }
 
+    /// Delete data by hash
+    /// Returns true if the file was deleted, false if it didn't exist
+    pub fn delete(&self, hash: &Hash) -> io::Result<bool> {
+        let path = self.hash_to_path(hash);
+        if path.exists() {
+            fs::remove_file(&path)?;
+            log::debug!("Deleted CAS block: {}", hex::encode(hash));
+            Ok(true)
+        } else {
+            Ok(false)
+        }
+    }
+
     /// Convert hash to file path (organized as base/XX/YYYYYYYY...)
     fn hash_to_path(&self, hash: &Hash) -> PathBuf {
         let hex = hex::encode(hash);

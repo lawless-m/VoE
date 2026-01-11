@@ -116,6 +116,19 @@ fn handle_client(mut stream: TcpStream, storage: Arc<Mutex<CasStorage>>) -> io::
                     CasResponse::Exists(storage.exists(&hash))
                 }
             }
+            CasCommand::Delete => {
+                if data.len() != 16 {
+                    CasResponse::Error("invalid hash length".to_string())
+                } else {
+                    let mut hash = [0u8; 16];
+                    hash.copy_from_slice(&data);
+                    let storage = storage.lock().unwrap();
+                    match storage.delete(&hash) {
+                        Ok(deleted) => CasResponse::Deleted(deleted),
+                        Err(e) => CasResponse::Error(format!("delete failed: {}", e)),
+                    }
+                }
+            }
             CasCommand::Ping => CasResponse::Pong,
         };
 
