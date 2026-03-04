@@ -1,10 +1,9 @@
 //! iSCSI server binary
 //!
-//! iSCSI target server backed by CAS storage
-//!
-//! Supports two modes:
-//! 1. Single-target mode (CLI args) - backwards compatible
-//! 2. Multi-target mode (TOML config) - new feature
+//! Supports three modes:
+//! 1. File-backed mode (--file) - direct file/device I/O
+//! 2. CAS-backed mode (--cas-server) - content-addressable storage
+//! 3. Multi-target mode (--config) - TOML config for multiple targets
 
 use clap::Parser;
 use env_logger::Env;
@@ -13,35 +12,39 @@ use std::fs;
 use std::path::PathBuf;
 use std::process;
 
-use aoe_server::iscsi::{CasScsiDevice, CasScsiDeviceConfig};
+use aoe_server::iscsi::{CasScsiDevice, CasScsiDeviceConfig, FileScsiDevice};
 use iscsi_target::{IscsiTarget, IscsiServer};
 
 #[derive(Parser, Debug)]
 #[command(name = "iscsi-server")]
-#[command(about = "iSCSI target with CAS backend", long_about = None)]
+#[command(about = "iSCSI target server", long_about = None)]
 struct Args {
     /// Path to TOML configuration file (for multi-target mode)
     #[arg(short, long)]
     config: Option<PathBuf>,
 
-    /// Bind address (e.g., 0.0.0.0:3260) [single-target mode]
+    /// Bind address
     #[arg(short, long, default_value = "0.0.0.0:3260")]
     bind: String,
 
-    /// CAS server address [single-target mode]
-    #[arg(long, default_value = "127.0.0.1:3000")]
-    cas_server: String,
+    /// Backing file or block device path (file-backed mode)
+    #[arg(short, long)]
+    file: Option<PathBuf>,
 
-    /// Device size in MB [single-target mode]
+    /// CAS server address (CAS-backed mode)
+    #[arg(long)]
+    cas_server: Option<String>,
+
+    /// Device size in MB (creates file if it doesn't exist)
     #[arg(short, long, default_value = "100")]
     size: u64,
 
-    /// LBA index database path [single-target mode]
+    /// LBA index database path (CAS mode only)
     #[arg(short, long, default_value = "/var/lib/voe-iscsi/index")]
     index: PathBuf,
 
-    /// iSCSI target name (IQN) [single-target mode]
-    #[arg(short, long, default_value = "iqn.2025-12.local.voe:storage.cas-disk")]
+    /// iSCSI target name (IQN)
+    #[arg(short, long, default_value = "iqn.2025-12.local.voe:storage.disk1")]
     target: String,
 }
 
@@ -74,8 +77,13 @@ fn main() {
 
     if let Some(config_path) = args.config {
         run_multi_target(config_path);
+    } else if let Some(ref file_path) = args.file {
+        run_file_target(&args, file_path);
+    } else if let Some(ref cas_server) = args.cas_server {
+        run_cas_target(&args, cas_server);
     } else {
-        run_single_target(args);
+        log::error!("Must specify either --file <path> or --cas-server <addr> (or --config for multi-target)");
+        process::exit(1);
     }
 }
 
@@ -162,23 +170,67 @@ fn run_multi_target(config_path: PathBuf) {
     }
 }
 
-/// Run in single-target mode (backwards compatible with original CLI)
-fn run_single_target(args: Args) {
-    log::info!("Starting iSCSI server in single-target mode");
+/// Run with file-backed storage
+fn run_file_target(args: &Args, file_path: &PathBuf) {
+    log::info!("Starting iSCSI server (file-backed)");
     log::info!("  Bind address: {}", args.bind);
-    log::info!("  CAS server: {}", args.cas_server);
+    log::info!("  Backing file: {:?}", file_path);
+    log::info!("  Target IQN: {}", args.target);
+
+    let device = if file_path.exists() {
+        match FileScsiDevice::open(file_path) {
+            Ok(d) => d,
+            Err(e) => {
+                log::error!("Failed to open {:?}: {}", file_path, e);
+                process::exit(1);
+            }
+        }
+    } else {
+        log::info!("  Creating new {} MB backing file", args.size);
+        match FileScsiDevice::create(file_path, args.size) {
+            Ok(d) => d,
+            Err(e) => {
+                log::error!("Failed to create {:?}: {}", file_path, e);
+                process::exit(1);
+            }
+        }
+    };
+
+    let target = match IscsiTarget::builder()
+        .bind_addr(&args.bind)
+        .target_name(&args.target)
+        .build(device)
+    {
+        Ok(target) => target,
+        Err(e) => {
+            log::error!("Failed to create iSCSI target: {}", e);
+            process::exit(1);
+        }
+    };
+
+    log::info!("iSCSI target ready, waiting for connections...");
+
+    if let Err(e) = target.run() {
+        log::error!("Target error: {}", e);
+        process::exit(1);
+    }
+}
+
+/// Run with CAS-backed storage
+fn run_cas_target(args: &Args, cas_server: &str) {
+    log::info!("Starting iSCSI server (CAS-backed)");
+    log::info!("  Bind address: {}", args.bind);
+    log::info!("  CAS server: {}", cas_server);
     log::info!("  Device size: {} MB", args.size);
     log::info!("  Index file: {:?}", args.index);
     log::info!("  Target IQN: {}", args.target);
 
-    // Calculate capacity in blocks (4KB each to match CAS device block size)
     let capacity_blocks = (args.size * 1024 * 1024) / 4096;
 
-    // Create CAS SCSI device
     let device_config = CasScsiDeviceConfig {
-        cas_server_addr: args.cas_server,
+        cas_server_addr: cas_server.to_string(),
         capacity_blocks,
-        index_path: args.index,
+        index_path: args.index.clone(),
         vendor_id: "VoE     ".to_string(),
         product_id: format!("CAS Disk {:>6}MB", args.size),
         product_rev: "1.0 ".to_string(),
@@ -195,7 +247,6 @@ fn run_single_target(args: Args) {
     log::info!("CAS SCSI device created successfully");
     log::info!("  Capacity: {} blocks ({} MB)", capacity_blocks, args.size);
 
-    // Create iSCSI target
     let target = match IscsiTarget::builder()
         .bind_addr(&args.bind)
         .target_name(&args.target)
@@ -210,7 +261,6 @@ fn run_single_target(args: Args) {
 
     log::info!("iSCSI target ready, waiting for connections...");
 
-    // Run the target
     if let Err(e) = target.run() {
         log::error!("Target error: {}", e);
         process::exit(1);

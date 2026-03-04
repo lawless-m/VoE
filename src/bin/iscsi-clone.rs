@@ -11,10 +11,13 @@
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
 use env_logger::Env;
+use redb::{ReadableDatabase, TableDefinition};
 use std::collections::HashSet;
 use std::path::PathBuf;
 
 use aoe_server::iscsi::{CloneManager, TargetRegistry};
+
+const LBA_TABLE: TableDefinition<u64, &[u8; 16]> = TableDefinition::new("lba_index");
 
 #[derive(Parser)]
 #[command(name = "iscsi-clone")]
@@ -247,9 +250,19 @@ fn cmd_info(cli: &Cli, target: &str, stats: bool) -> Result<()> {
 
         // Count blocks in index
         if metadata.index_path.exists() {
-            match sled::open(&metadata.index_path) {
+            match redb::Database::open(&metadata.index_path) {
                 Ok(db) => {
-                    println!("  Index entries: {}", db.len());
+                    use redb::{ReadableTable, ReadableTableMetadata};
+                    match db.begin_read() {
+                        Ok(txn) => match txn.open_table(LBA_TABLE) {
+                            Ok(table) => match table.len() {
+                                Ok(len) => println!("  Index entries: {}", len),
+                                Err(e) => println!("  Index entries: Error - {}", e),
+                            },
+                            Err(e) => println!("  Index entries: Error - {}", e),
+                        },
+                        Err(e) => println!("  Index entries: Error - {}", e),
+                    }
                 }
                 Err(e) => {
                     println!("  Index entries: Error - {}", e);
@@ -441,34 +454,26 @@ fn cmd_gc(cli: &Cli, target: &str, dry_run: bool) -> Result<()> {
     Ok(())
 }
 
-/// Collect all unique hashes from a target's sled database
+/// Collect all unique hashes from a target's redb database
 fn collect_target_hashes(index_path: &std::path::Path) -> Result<HashSet<aoe_server::cas::Hash>> {
+    use redb::ReadableTable;
+
     if !index_path.exists() {
         anyhow::bail!("Index path does not exist: {:?}", index_path);
     }
 
-    let db = sled::open(index_path)
+    let db = redb::Database::open(index_path)
         .with_context(|| format!("Failed to open database: {:?}", index_path))?;
 
+    let read_txn = db.begin_read()
+        .context("Failed to begin read transaction")?;
+    let table = read_txn.open_table(LBA_TABLE)
+        .context("Failed to open LBA table")?;
+
     let mut hashes = HashSet::new();
-    let zero_block_key = b"__ZERO_BLOCK__";
-
-    for entry_result in db.iter() {
-        let (key, value) = entry_result.context("Failed to read entry from database")?;
-
-        // Skip the zero block hash key (it's a special metadata key)
-        if key.as_ref() == zero_block_key {
-            continue;
-        }
-
-        // Each value is a 16-byte hash
-        if value.len() == 16 {
-            let mut hash = [0u8; 16];
-            hash.copy_from_slice(&value);
-            hashes.insert(hash);
-        } else {
-            log::warn!("Skipping entry with invalid hash size: {} bytes", value.len());
-        }
+    for result in table.iter().context("Failed to iterate LBA table")? {
+        let (_key, value) = result.context("Failed to read entry from database")?;
+        hashes.insert(*value.value());
     }
 
     Ok(hashes)

@@ -1,7 +1,7 @@
 //! Target cloning operations
 //!
-//! Handles creation, cloning, and deletion of iSCSI targets using sled database
-//! export/import for safe, version-agnostic cloning.
+//! Handles creation, cloning, and deletion of iSCSI targets using redb database
+//! copy for safe cloning.
 
 use anyhow::{Context, Result};
 use std::fs;
@@ -104,9 +104,9 @@ impl CloneManager {
         fs::create_dir_all(&dest_index_path)
             .with_context(|| format!("Failed to create destination index directory: {:?}", dest_index_path))?;
 
-        // Clone the sled database using export/import
-        log::info!("Exporting source database: {:?}", source.index_path);
-        self.clone_sled_database(&source.index_path, &dest_index_path)?;
+        // Clone the redb database
+        log::info!("Cloning source database: {:?}", source.index_path);
+        self.clone_redb_database(&source.index_path, &dest_index_path)?;
 
         // Create destination metadata
         let dest_metadata = TargetMetadata {
@@ -127,33 +127,52 @@ impl CloneManager {
         Ok(dest_iqn)
     }
 
-    /// Clone a sled database by copying all key-value pairs
-    fn clone_sled_database(&self, source_path: &Path, dest_path: &Path) -> Result<()> {
-        // Open source database
-        let source_db = sled::open(source_path)
+    /// Clone a redb database by copying all key-value pairs
+    fn clone_redb_database(&self, source_path: &Path, dest_path: &Path) -> Result<()> {
+        use redb::{Database, ReadableDatabase, ReadableTable, TableDefinition};
+
+        const LBA_TABLE: TableDefinition<u64, &[u8; 16]> = TableDefinition::new("lba_index");
+        const META_TABLE: TableDefinition<&str, &[u8; 16]> = TableDefinition::new("meta");
+
+        let source_db = Database::open(source_path)
             .with_context(|| format!("Failed to open source database: {:?}", source_path))?;
-
-        log::debug!("Source database opened, {} entries", source_db.len());
-
-        // Create destination database
-        let dest_db = sled::open(dest_path)
+        let dest_db = Database::create(dest_path)
             .with_context(|| format!("Failed to create destination database: {:?}", dest_path))?;
 
-        // Copy all key-value pairs
-        let mut count = 0;
-        for result in source_db.iter() {
-            let (key, value) = result.context("Failed to read entry from source database")?;
-            dest_db.insert(&key, &value)
-                .context("Failed to write entry to destination database")?;
-            count += 1;
+        let read_txn = source_db.begin_read()
+            .context("Failed to begin read transaction")?;
+        let write_txn = dest_db.begin_write()
+            .context("Failed to begin write transaction")?;
+
+        // Copy meta table
+        {
+            let src_table = read_txn.open_table(META_TABLE)
+                .context("Failed to open source meta table")?;
+            let mut dst_table = write_txn.open_table(META_TABLE)
+                .context("Failed to open dest meta table")?;
+            for result in src_table.iter().context("Failed to iterate meta table")? {
+                let (key, value) = result.context("Failed to read meta entry")?;
+                dst_table.insert(key.value(), value.value())
+                    .context("Failed to write meta entry")?;
+            }
         }
 
-        // Flush destination database
-        dest_db.flush()
-            .context("Failed to flush destination database")?;
+        // Copy LBA table
+        let mut count = 0u64;
+        {
+            let src_table = read_txn.open_table(LBA_TABLE)
+                .context("Failed to open source LBA table")?;
+            let mut dst_table = write_txn.open_table(LBA_TABLE)
+                .context("Failed to open dest LBA table")?;
+            for result in src_table.iter().context("Failed to iterate LBA table")? {
+                let (key, value) = result.context("Failed to read LBA entry")?;
+                dst_table.insert(key.value(), value.value())
+                    .context("Failed to write LBA entry")?;
+                count += 1;
+            }
+        }
 
-        drop(source_db);
-        drop(dest_db);
+        write_txn.commit().context("Failed to commit destination database")?;
 
         log::info!("Successfully cloned database: {} entries from {:?} to {:?}", count, source_path, dest_path);
         Ok(())

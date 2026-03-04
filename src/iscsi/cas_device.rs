@@ -7,7 +7,7 @@ use std::io::{BufReader, BufWriter};
 use std::net::TcpStream;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
-use sled::Db;
+use redb::{Database, ReadableDatabase, ReadableTable, TableDefinition};
 
 use crate::cas::protocol::{read_frame, write_frame, CasCommand};
 use crate::cas::Hash;
@@ -15,6 +15,9 @@ use iscsi_target::{IscsiError, ScsiBlockDevice, ScsiResult};
 
 const BLOCK_SIZE: u32 = 4096;  // 4KB blocks - good balance for CAS dedup
 const MAX_CACHED_BLOCKS: usize = 1000;  // Auto-flush when cache exceeds 4MB to prevent memory bloat
+
+const LBA_TABLE: TableDefinition<u64, &[u8; 16]> = TableDefinition::new("lba_index");
+const META_TABLE: TableDefinition<&str, &[u8; 16]> = TableDefinition::new("meta");
 
 /// Configuration for CAS SCSI device
 #[derive(Debug, Clone)]
@@ -38,7 +41,7 @@ impl Default for CasScsiDeviceConfig {
         Self {
             cas_server_addr: "127.0.0.1:3000".to_string(),
             capacity_blocks: 20480, // 10 MB @ 512 bytes
-            index_path: PathBuf::from("/var/lib/voe-iscsi/index.json"),
+            index_path: PathBuf::from("/var/lib/voe-iscsi/index.redb"),
             vendor_id: "VoE     ".to_string(),
             product_id: "CAS Block Device".to_string(),
             product_rev: "1.0 ".to_string(),
@@ -46,71 +49,75 @@ impl Default for CasScsiDeviceConfig {
     }
 }
 
-/// Persistent index of LBA to hash mappings using sled
+/// Persistent index of LBA to hash mappings using redb
 struct LbaIndex {
-    db: Arc<Db>,
+    db: Arc<Database>,
     zero_block_hash: Hash,
 }
 
-// Special key for storing zero block hash
-const ZERO_BLOCK_KEY: &[u8] = b"__ZERO_BLOCK__";
-
 impl LbaIndex {
     fn new(db_path: &PathBuf, zero_block_hash: Hash) -> std::io::Result<Self> {
-        // Create parent directory if needed
         if let Some(parent) = db_path.parent() {
             std::fs::create_dir_all(parent)?;
         }
 
-        let db = sled::open(db_path)
+        let db = Database::create(db_path)
             .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?;
-
-        let db = Arc::new(db);
 
         // Store zero block hash
-        db.insert(ZERO_BLOCK_KEY, &zero_block_hash)
+        let write_txn = db.begin_write()
+            .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?;
+        {
+            let mut table = write_txn.open_table(META_TABLE)
+                .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?;
+            table.insert("zero_block", &zero_block_hash)
+                .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?;
+        }
+        write_txn.commit()
             .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?;
 
-        Ok(Self { db, zero_block_hash })
+        Ok(Self { db: Arc::new(db), zero_block_hash })
     }
 
     fn open(db_path: &PathBuf) -> std::io::Result<Self> {
-        let db = sled::open(db_path)
+        let db = Database::open(db_path)
             .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?;
 
-        let db = Arc::new(db);
-
         // Load zero block hash
-        let zero_block_hash = db.get(ZERO_BLOCK_KEY)
+        let read_txn = db.begin_read()
+            .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?;
+        let table = read_txn.open_table(META_TABLE)
+            .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?;
+        let value = table.get("zero_block")
             .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?
             .ok_or_else(|| std::io::Error::new(std::io::ErrorKind::InvalidData, "Missing zero block hash"))?;
+        let zero_block_hash = *value.value();
 
-        let mut hash = [0u8; 16];
-        hash.copy_from_slice(&zero_block_hash);
-
-        Ok(Self { db, zero_block_hash: hash })
+        Ok(Self { db: Arc::new(db), zero_block_hash })
     }
 
     fn get(&self, lba: u64) -> std::io::Result<Option<Hash>> {
-        let key = lba.to_le_bytes();
-        match self.db.get(&key) {
-            Ok(Some(value)) => {
-                if value.len() == 16 {
-                    let mut hash = [0u8; 16];
-                    hash.copy_from_slice(&value);
-                    Ok(Some(hash))
-                } else {
-                    Err(std::io::Error::new(std::io::ErrorKind::InvalidData, "Invalid hash size"))
-                }
-            }
+        let read_txn = self.db.begin_read()
+            .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?;
+        let table = read_txn.open_table(LBA_TABLE)
+            .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?;
+        match table.get(lba) {
+            Ok(Some(value)) => Ok(Some(*value.value())),
             Ok(None) => Ok(None),
             Err(e) => Err(std::io::Error::new(std::io::ErrorKind::Other, e)),
         }
     }
 
     fn insert(&self, lba: u64, hash: &Hash) -> std::io::Result<()> {
-        let key = lba.to_le_bytes();
-        self.db.insert(&key, hash)
+        let write_txn = self.db.begin_write()
+            .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?;
+        {
+            let mut table = write_txn.open_table(LBA_TABLE)
+                .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?;
+            table.insert(lba, hash)
+                .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?;
+        }
+        write_txn.commit()
             .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?;
         Ok(())
     }

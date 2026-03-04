@@ -4,6 +4,7 @@
 
 pub mod cas_device;
 pub mod clone;
+pub mod file_device;
 pub mod pdu;
 pub mod registry;
 // pub mod session;  // TODO: Update to use BlockStorage trait methods
@@ -11,5 +12,6 @@ pub mod registry;
 
 pub use cas_device::{CasScsiDevice, CasScsiDeviceConfig};
 pub use clone::CloneManager;
+pub use file_device::FileScsiDevice;
 pub use registry::{TargetRegistry, TargetMetadata};
 // pub use target::{IscsiTarget, IscsiTargetConfig};
