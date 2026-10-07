@@ -1,4 +1,4 @@
-# VoE - Versatile over Ethernet Storage
+# VoE - Venti over Ethernet Storage
 
 A suite of network block storage servers in Rust with content-addressed storage (CAS) and automatic deduplication.
 

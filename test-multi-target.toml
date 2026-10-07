@@ -1,0 +1,25 @@
+# Test configuration for multi-target iSCSI server
+[server]
+bind = "0.0.0.0:3260"
+cas_server = "127.0.0.1:3000"
+
+# Test target 1
+[[targets]]
+name = "iqn.2025-12.local.voe:storage.test1"
+size_mb = 100
+index_path = "/tmp/voe-iscsi-test/test1/index"
+alias = "Test Target 1"
+
+# Test target 2
+[[targets]]
+name = "iqn.2025-12.local.voe:storage.test2"
+size_mb = 100
+index_path = "/tmp/voe-iscsi-test/test2/index"
+alias = "Test Target 2"
+
+# Test target 3
+[[targets]]
+name = "iqn.2025-12.local.voe:storage.test3"
+size_mb = 100
+index_path = "/tmp/voe-iscsi-test/test3/index"
+alias = "Test Target 3"
